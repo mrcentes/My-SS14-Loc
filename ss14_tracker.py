@@ -26,6 +26,80 @@ import requests
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Set
+from collections import defaultdict, deque
+import logging
+from logging.handlers import TimedRotatingFileHandler
+
+# ==================== 日志配置 (Logging) ====================
+
+class GuiHandler(logging.Handler):
+    """
+    自定义日志处理器，将日志发送到 GUI。
+    使用队列缓存日志，直到 GUI 准备好显示。
+    """
+    def __init__(self, max_len=5000):
+        super().__init__()
+        self.log_buffer = deque(maxlen=max_len)
+        self.gui_callback = None
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            # 保存日志级别和消息，以便 GUI 进行颜色高亮
+            self.log_buffer.append((record.levelname, msg))
+            if self.gui_callback:
+                self.gui_callback()
+        except Exception:
+            self.handleError(record)
+            
+    def set_callback(self, callback):
+        self.gui_callback = callback
+        
+    def pop_logs(self):
+        """获取并清除所有缓存的日志"""
+        logs = list(self.log_buffer)
+        self.log_buffer.clear()
+        return logs
+
+# 全局 GUI 日志处理器实例
+gui_log_handler = GuiHandler()
+
+def setup_logging():
+    """初始化日志系统"""
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    log_file = log_dir / f"ss14_tracker_{datetime.now().strftime('%Y-%m-%d')}.log"
+    
+    # 配置根日志记录器
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    # 清除旧的处理器（防止重复）
+    if logger.handlers:
+        logger.handlers.clear()
+    
+    # 1. 文件处理器 (自动按天切割，保留30天)
+    file_handler = TimedRotatingFileHandler(
+        log_file, when="midnight", interval=1, backupCount=30, encoding='utf-8'
+    )
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    # 2. 控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # 3. GUI 处理器
+    # GUI 日志不需要时间戳（GUI 自己会加或者已经包含了），这里为了统一格式，简单处理
+    # 如果 GUI 需要根据内容高亮，我们在 emit 中已经保存了 levelname
+    gui_log_handler.setFormatter(logging.Formatter('%(message)s'))
+    logger.addHandler(gui_log_handler)
+    
+    logging.info(f"日志系统已初始化，日志文件: {log_file}")
+
 
 # ==================== 高 DPI 支持 (Windows) ====================
 # 在导入 tkinter 之前设置 DPI 感知，解决 2K/4K 屏幕字体模糊问题
@@ -70,53 +144,87 @@ def is_ftl_key(text: str) -> bool:
     检测字符串是否为 FTL 本地化键。
     
     FTL 键特征：
-    - 全小写
+    - 不包含空格
     - 包含连字符 -
-    - 格式如 "word-word-word"（至少2段用连字符连接的纯字母词）
+    - 格式如 "word-word-word" 或 "word-word-Word"（kebab-case 风格）
+    - 至少有3段（2个连字符）
+    
+    正常文本特征（不应过滤）：
+    - 包含空格（如 "Pride-O-Mat restock box"）
+    - 只有1-2段连字符连接（如 "AK-47"）
+    - 包含非字母字符（数字、特殊符号等）
     
     示例：
     - "loadout-group-weapon" -> True (FTL 键)
-    - "Assault Rifle" -> False (正常文本)
-    - "AK-47" -> False (包含数字和大写)
+    - "item-component-size-Tiny" -> True (FTL 键)
+    - "Pride-O-Mat restock box" -> False (包含空格，是正常文本)
+    - "AK-47" -> False (只有2段，不是 FTL 键)
+    - "Assault Rifle" -> False (无连字符)
     """
     if not text or not isinstance(text, str):
         return False
     
     text = text.strip()
     
+    # 正常文本包含空格，直接放行
+    if ' ' in text:
+        return False
+    
     # 必须包含连字符
     if '-' not in text:
         return False
     
-    # 必须全小写（FTL 键通常全小写）
-    if text != text.lower():
-        return False
-    
-    # 不能包含空格（正常文本通常有空格）
-    if ' ' in text:
-        return False
-    
-    # 检查是否符合 word-word 模式（至少2段）
+    # 分割为段
     parts = text.split('-')
-    if len(parts) < 2:
+    
+    # FTL 键通常至少有3段（如 xxx-yyy-zzz）
+    # 只有2段的如 "AK-47" 或 "O-Mat" 不太可能是 FTL 键
+    if len(parts) < 3:
         return False
     
-    # 每段都应该是纯字母（允许空段如 "foo--bar" 也跳过）
+    # 检查每段是否为纯字母（FTL 键每段都是单词）
     for part in parts:
+        # 允许空段（如 xxx--yyy）也视为 FTL 键
         if part and not part.isalpha():
             return False
     
     return True
 
+# ==================== 中文检测 (Chinese Detection) ====================
+
+def contains_chinese(text: str) -> bool:
+    """
+    检测字符串是否包含中文字符。
+    用于判断是否需要标记为已翻译状态。
+    
+    CJK统一汉字范围：\u4e00-\u9fff
+    """
+    if not text or not isinstance(text, str):
+        return False
+    return any('\u4e00' <= c <= '\u9fff' for c in text)
+
 # ==================== 共享工具 (Utils) ====================
 
 # 全局进度回调（用于 GUI 更新进度条）
 _progress_callback: Optional[Callable[[int, int, str], None]] = None
+# 全局停止检查回调（用于长时间操作检查是否需要停止）
+_stop_check_callback: Optional[Callable[[], bool]] = None
 
 def set_progress_callback(callback: Optional[Callable[[int, int, str], None]]):
     """设置进度回调函数 (current, total, message)"""
     global _progress_callback
     _progress_callback = callback
+
+def set_stop_check_callback(callback: Optional[Callable[[], bool]]):
+    """设置停止检查回调函数，返回 True 表示需要停止"""
+    global _stop_check_callback
+    _stop_check_callback = callback
+
+def should_stop() -> bool:
+    """检查是否应该停止当前操作"""
+    if _stop_check_callback:
+        return _stop_check_callback()
+    return False
 
 def report_progress(current: int, total: int, message: str = ""):
     """报告进度"""
@@ -124,10 +232,21 @@ def report_progress(current: int, total: int, message: str = ""):
         _progress_callback(current, total, message)
 
 def log(message: str, level: str = "INFO"):
-    """带时间戳的简单日志记录器"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] [{level}] {message}")
-    sys.stdout.flush()
+    """
+    兼容旧代码的日志适配器，转发到 logging 模块。
+    """
+    lvl_name = level.upper()
+    # 映射自定义级别名称到 logging 级别
+    if lvl_name == "ERROR":
+        lvl = logging.ERROR
+    elif lvl_name == "WARNING":
+        lvl = logging.WARNING
+    elif lvl_name == "DEBUG":
+        lvl = logging.DEBUG
+    else:
+        lvl = logging.INFO
+    
+    logging.log(lvl, message)
 
 def error(message: str):
     """输出错误并退出"""
@@ -221,31 +340,62 @@ class PZClient:
 
     def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
         """带重试的请求"""
+        # HTTP 状态码说明（参考 Paratranz API 文档）
+        STATUS_CODES = {
+            200: "成功",
+            201: "创建成功",
+            302: "重定向",
+            400: "参数错误",
+            401: "Token 错误或过期",
+            403: "没有权限",
+            404: "资源不存在",
+            405: "HTTP方法错误",
+            429: "请求过于频繁",
+            500: "服务器错误",
+            502: "服务器无响应",
+            503: "服务不可用",
+            504: "服务超时"
+        }
+        
         last_error = None
         for attempt in range(API_RETRY_COUNT):
             try:
                 log(f"发送请求: {method} {url}")
                 response = requests.request(method, url, headers=self.headers, timeout=30, **kwargs)
                 
-                log(f"响应状态码: {response.status_code}")
+                # 获取状态码说明
+                status_desc = STATUS_CODES.get(response.status_code, "未知状态")
+                log(f"响应状态码: {response.status_code} ({status_desc})")
                 
                 # 处理常见错误
                 if response.status_code == 401:
-                    log("Token 错误或已过期，请检查你的 API Token", "ERROR")
+                    log("❌ [401] Token 错误或已过期，请检查你的 API Token", "ERROR")
                     return response
                 
                 if response.status_code == 403:
-                    log("没有权限访问该资源", "ERROR")
+                    log("❌ [403] 没有权限访问该资源", "ERROR")
                     return response
                 
                 if response.status_code == 404:
-                    log("资源不存在，请检查项目ID是否正确", "ERROR")
+                    log("❌ [404] 资源不存在，请检查项目ID是否正确", "ERROR")
+                    return response
+                
+                if response.status_code == 400:
+                    try:
+                        error_msg = response.json().get('message', response.text[:100])
+                    except:
+                        error_msg = response.text[:100]
+                    log(f"❌ [400] 参数错误: {error_msg}", "ERROR")
+                    return response
+                
+                if response.status_code >= 500:
+                    log(f"⚠️ [{response.status_code}] 服务器错误，可能需要稍后重试", "WARNING")
                     return response
                 
                 # 处理速率限制
                 if response.status_code == 429:
                     wait_time = int(response.headers.get('Retry-After', API_RETRY_DELAY * 2))
-                    log(f"API 速率限制，等待 {wait_time} 秒后重试...", "WARNING")
+                    log(f"⚠️ [429] API 速率限制，等待 {wait_time} 秒后重试...", "WARNING")
                     time.sleep(wait_time)
                     continue
                 
@@ -253,9 +403,9 @@ class PZClient:
                 
             except requests.exceptions.RequestException as e:
                 last_error = e
-                log(f"请求异常: {e}", "ERROR")
+                log(f"❌ 请求异常: {e}", "ERROR")
                 if attempt < API_RETRY_COUNT - 1:
-                    log(f"{API_RETRY_DELAY} 秒后重试 ({attempt + 1}/{API_RETRY_COUNT})...", "WARNING")
+                    log(f"⏳ {API_RETRY_DELAY} 秒后重试 ({attempt + 1}/{API_RETRY_COUNT})...", "WARNING")
                     time.sleep(API_RETRY_DELAY)
                     
         raise last_error if last_error else Exception("请求失败")
@@ -403,7 +553,17 @@ class PZClient:
         log(f"📤 批量上传 {len(json_files)} 个文件到 Paratranz...")
         
         for i, rel_path in enumerate(json_files):
+            # 检查是否需要停止
+            if should_stop():
+                log(f"⏹ 上传已停止，已完成 {stats['uploaded']} 个")
+                stats["skipped"] = len(json_files) - i
+                break
+            
             file_path = os.path.join(local_dir, rel_path)
+            try:
+                file_size = os.path.getsize(file_path)
+            except:
+                file_size = 0
             
             # 从相对路径推断远程路径
             # 例如：Entities/Clothing.json -> /Entities/Clothing/
@@ -427,7 +587,8 @@ class PZClient:
             if remote_path == '//':
                 remote_path = '/'
             
-            log(f"[{i+1}/{len(json_files)}] 上传: {rel_path} -> {remote_path}")
+            log(f"[{i+1}/{len(json_files)}] 上传: {rel_path} ({file_size/1024:.1f}KB) -> {remote_path}")
+            report_progress(i + 1, len(json_files), f"上传: {os.path.basename(rel_path)}")
             
             if self.upload_file(file_path, remote_path):
                 stats["uploaded"] += 1
@@ -437,7 +598,119 @@ class PZClient:
             # 避免 API 速率限制
             time.sleep(0.5)
         
-        log(f"✅ 批量上传完成。成功: {stats['uploaded']}，失败: {stats['failed']}")
+        log(f"✅ 批量上传完成。成功: {stats['uploaded']}，失败: {stats['failed']}，跳过: {stats['skipped']}")
+        return stats
+
+    def upload_translation(self, file_path: str, remote_path: str = "/", force: bool = False) -> bool:
+        """
+        上传译文到 Paratranz（仅更新翻译，不改原文）。
+        
+        使用 API: POST /projects/{projectId}/files/{fileId}/translation
+        
+        参数:
+            file_path: 本地 JSON 文件路径（包含 translation 字段）
+            remote_path: 远程路径（用于匹配对应的原文文件）
+            force: 是否强制覆盖已人工编辑的词条（默认 False）
+        """
+        if not os.path.exists(file_path):
+            log(f"❌ 未找到本地文件: {file_path}", "ERROR")
+            return False
+
+        filename = os.path.basename(file_path)
+        log(f"📝 准备上传译文: {filename} -> {remote_path}")
+        
+        # 查找对应的原文文件 ID
+        file_id = self.get_file_id(filename, remote_path)
+        if not file_id:
+            log(f"❌ 未找到对应的原文文件，请先上传原文: {filename}", "ERROR")
+            return False
+
+        try:
+            url = f"{self.BASE_URL}/projects/{self.project_id}/files/{file_id}/translation"
+            
+            with open(file_path, 'rb') as f:
+                files = {'file': (filename, f, 'application/json')}
+                data = {'force': 'true' if force else 'false'}
+                response = self._request_with_retry("POST", url, files=files, data=data)
+
+            if response.status_code in [200, 201]:
+                log(f"✅ 译文上传成功: {filename}")
+                return True
+            else:
+                try:
+                    error_msg = response.json().get('message', response.text)
+                except:
+                    error_msg = response.text
+                log(f"❌ 译文上传失败: {error_msg}", "ERROR")
+                return False
+        except Exception as e:
+            log(f"❌ 译文上传异常: {e}", "ERROR")
+            return False
+
+    def upload_translation_folder(self, local_dir: str, force: bool = False) -> Dict[str, int]:
+        """
+        批量上传目录下所有 JSON 文件的译文到 Paratranz。
+        
+        参数:
+            local_dir: 本地目录（包含 JSON 文件）
+            force: 是否强制覆盖已人工编辑的词条
+        
+        返回统计信息。
+        """
+        stats = {"uploaded": 0, "failed": 0, "skipped": 0}
+        
+        if not os.path.isdir(local_dir):
+            log(f"❌ 目录不存在: {local_dir}", "ERROR")
+            return stats
+        
+        # 递归查找所有 JSON 文件
+        json_files = []
+        for root, dirs, files in os.walk(local_dir):
+            for f in files:
+                if f.endswith('.json'):
+                    rel_path = os.path.relpath(os.path.join(root, f), local_dir)
+                    json_files.append(rel_path)
+        
+        if not json_files:
+            log(f"⚠️ 目录中没有 JSON 文件: {local_dir}", "WARNING")
+            return stats
+        
+        log(f"📝 批量上传译文 {len(json_files)} 个文件到 Paratranz...")
+        if force:
+            log("⚠️ 强制模式已启用，将覆盖已人工编辑的词条", "WARNING")
+        
+        for i, rel_path in enumerate(json_files):
+            if should_stop():
+                log(f"⏹ 上传已停止，已完成 {stats['uploaded']} 个")
+                stats["skipped"] = len(json_files) - i
+                break
+            
+            file_path = os.path.join(local_dir, rel_path)
+            
+            # 推断远程路径（与 upload_folder 逻辑一致）
+            remote_dir = os.path.dirname(rel_path).replace('\\', '/')
+            base_name = os.path.splitext(os.path.basename(rel_path))[0]
+            
+            if remote_dir:
+                remote_path = '/' + remote_dir + '/' + base_name + '/'
+            else:
+                remote_path = '/' + base_name + '/'
+            
+            remote_path = '/' + remote_path.strip('/').replace('//', '/') + '/'
+            if remote_path == '//':
+                remote_path = '/'
+            
+            log(f"[{i+1}/{len(json_files)}] 译文: {rel_path} -> {remote_path}")
+            report_progress(i + 1, len(json_files), f"译文: {os.path.basename(rel_path)}")
+            
+            if self.upload_translation(file_path, remote_path, force):
+                stats["uploaded"] += 1
+            else:
+                stats["failed"] += 1
+            
+            time.sleep(0.5)
+        
+        log(f"✅ 译文批量上传完成。成功: {stats['uploaded']}，失败: {stats['failed']}，跳过: {stats['skipped']}")
         return stats
 
     def trigger_export(self) -> bool:
@@ -725,6 +998,9 @@ def extract_strings(scan_dir: str, output_file: str, fields: List[str] = None,
         f"其中 {stats['files_with_text']} 个包含文本，"
         f"共 {stats['total_strings']} 条字符串。")
     
+    if stats.get("translated", 0) > 0:
+        log(f"  ✅ 已标记 {stats['translated']} 条为已翻译状态 (stage: 1)")
+    
     if stats.get("ftl_skipped", 0) > 0:
         log(f"  ⚠️ 已过滤 {stats['ftl_skipped']} 条 FTL 本地化键")
     
@@ -789,11 +1065,20 @@ def process_node_extract(node: Dict, extracted_data: List, rel_path: str,
                 if parent:
                     context += f"Parent: {parent}\n"
                 
-                extracted_data.append({
+                # 构建词条数据
+                entry = {
                     "key": key,
                     "original": original_text,
                     "context": context
-                })
+                }
+                
+                # 如果包含中文，添加翻译状态 (stage: 1 = 已翻译)
+                if contains_chinese(original_text):
+                    entry["translation"] = original_text
+                    entry["stage"] = 1
+                    stats["translated"] = stats.get("translated", 0) + 1
+                
+                extracted_data.append(entry)
                 
                 stats["by_field"][field] = stats["by_field"].get(field, 0) + 1
 
@@ -855,6 +1140,7 @@ def extract_strings_by_folder(scan_dir: str, output_dir: str, fields: List[str] 
         group_key = folder if folder else "root"
         
         try:
+            file_size = os.path.getsize(file_path)
             data = yaml_processor.load(file_path)
             if not data:
                 continue
@@ -872,6 +1158,7 @@ def extract_strings_by_folder(scan_dir: str, output_dir: str, fields: List[str] 
             if file_entries:
                 folder_data[group_key].extend(file_entries)
                 stats["files_with_text"] += 1
+                log(f"  + [{len(file_entries)}条] {rel_path} ({file_size/1024:.1f}KB)", "DEBUG")
             
             # 累计统计
             stats["ftl_skipped"] += file_stats.get("ftl_skipped", 0)
@@ -1143,84 +1430,296 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("SS14 自动化汉化工具箱 v3.0")
-        self.root.geometry("850x700")
+        self.root.title("SS14 自动化汉化工具箱 v3.2")
+        self.root.geometry("1100x800")
+        self.root.minsize(1050, 700)
         
-        style = ttk.Style()
-        style.theme_use('clam')
-        
+        # 加载配置
         self.config = self.load_config()
         self.is_running = False
-        
-        main_frame = ttk.Frame(root, padding="10")
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # 标题
-        title_label = ttk.Label(main_frame, text="SS14 汉化工作流工具 v3.2", 
-                                font=("Microsoft YaHei UI", 16, "bold"))
-        title_label.pack(pady=(0, 10))
-        
-        # 进度条区域
-        progress_frame = ttk.Frame(main_frame)
-        progress_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, 
-                                            maximum=100, mode='determinate')
-        self.progress_bar.pack(fill=tk.X, side=tk.LEFT, expand=True)
-        
-        self.progress_label = ttk.Label(progress_frame, text="就绪", width=30)
-        self.progress_label.pack(side=tk.RIGHT, padx=(10, 0))
-        
-        # 一键工作流按钮（突出显示）
-        workflow_frame = ttk.LabelFrame(main_frame, text="🚀 一键工作流（推荐）", padding=10)
-        workflow_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        ttk.Label(workflow_frame, text="自动执行: 提取原文 → 上传 Paratranz → 下载翻译 → 合并回游戏文件",
-                  foreground="gray").pack(side=tk.LEFT)
-        
-        self.btn_workflow = ttk.Button(workflow_frame, text="⚡ 开始一键同步", 
-                                        command=self.do_full_workflow)
-        self.btn_workflow.pack(side=tk.RIGHT, ipadx=20)
-        
-        # 选项卡
-        self.notebook = ttk.Notebook(main_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-        
-        self.tab_extract = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.tab_extract, text="1. 提取原文")
-        self.setup_extract_tab()
-        
-        self.tab_sync = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.tab_sync, text="2. Paratranz 同步")
-        self.setup_sync_tab()
-        
-        self.tab_merge = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.tab_merge, text="3. 合并翻译")
-        self.setup_merge_tab()
-        
-        self.tab_settings = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.tab_settings, text="⚙️ 设置")
-        self.setup_settings_tab()
-        
-        # 日志区域
-        log_frame = ttk.LabelFrame(main_frame, text="运行日志", padding=5)
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-        
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=12, state='disabled', 
-                                                  font=("Consolas", 9))
-        self.log_text.pack(fill=tk.BOTH, expand=True)
-        
-        # 状态栏
-        self.status_var = tk.StringVar()
-        self.status_var.set("就绪")
-        status_bar = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.stop_requested = False
 
+        # 注册 GUI 日志回调
+        gui_log_handler.set_callback(self.update_gui_log)
+
+        # 设置现代化样式主题
+        self._setup_styles()
+        
+        # 设置窗口背景色
+        self.root.configure(bg=self.colors['bg'])
+        
+        # === 创建可滚动的主容器 ===
+        # 外层容器
+        outer_frame = ttk.Frame(self.root)
+        outer_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 创建 Canvas 和滚动条
+        self.canvas = tk.Canvas(outer_frame, bg=self.colors['bg'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer_frame, orient="vertical", command=self.canvas.yview)
+        
+        # 可滚动的内部 Frame
+        self.scrollable_frame = ttk.Frame(self.canvas, style='Main.TFrame')
+        
+        # 当内容变化时更新滚动区域
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        
+        # 在 Canvas 中创建窗口
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        
+        # 当 Canvas 大小变化时，调整内部 Frame 宽度
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        
+        # 配置滚动条
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # 布局
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 绑定鼠标滚轮事件
+        self._bind_mousewheel()
+        
+        # 构建主界面内容
+        self._build_ui()
+        
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         # 自动检测目录
         self.auto_detect_directory()
+
+    def _setup_styles(self):
+        """配置现代化的UI样式"""
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # === 颜色定义 (Slate/Blue Theme) ===
+        self.colors = {
+            'primary': '#1890ff',       # 主色 - 科技蓝
+            'primary_hover': '#40a9ff',
+            'primary_dark': '#096dd9',  # 兼容旧代码
+            'success': '#52c41a',       # 成功 - 鲜绿
+            'success_hover': '#73d13d',
+            'success_dark': '#389e0d',  # 兼容旧代码
+            'warning': '#faad14',       # 警告 - 金黄
+            'warning_hover': '#ffc53d',
+            'danger': '#ff4d4f',        # 危险 - 红色
+            'danger_hover': '#ff7875',
+            'bg': '#f0f2f5',            # 全局背景 - 浅灰
+            'card_bg': '#ffffff',       # 卡片背景 - 纯白
+            'text': '#262626',          # 主文本 - 深黑
+            'text_secondary': '#595959',# 次要文本 - 灰
+            'text_muted': '#8c8c8c',    # 兼容旧代码 (提示文本)
+            'text_hint': '#8c8c8c',     # 提示文本
+            'border': '#d9d9d9',        # 边框
+            'input_bg': '#ffffff',      # 输入框背景
+        }
+        
+        # === 字体定义 ===
+        base_font = 'Microsoft YaHei UI' if sys.platform == 'win32' else 'Helvetica'
+        self.fonts = {
+            'h1': (base_font, 18, 'bold'),
+            'h2': (base_font, 14, 'bold'),
+            'body': (base_font, 10),
+            'body_bold': (base_font, 10, 'bold'),
+            'small': (base_font, 9),
+            'mono': ('Consolas', 10),
+        }
+        
+        # 兼容旧代码的字体引用
+        self.default_font = self.fonts['body']
+        self.default_font_bold = self.fonts['body_bold']
+        self.title_font = self.fonts['h1']
+        self.mono_font = self.fonts['mono']
+        
+        # === 样式配置 ===
+        
+        # 基础 Frame 和 Label
+        style.configure('.', background=self.colors['bg'], foreground=self.colors['text'], font=self.fonts['body'])
+        style.configure('Main.TFrame', background=self.colors['bg'])
+        style.configure('Card.TFrame', background=self.colors['card_bg'], relief='flat')
+        
+        # Label 样式
+        style.configure('TLabel', background=self.colors['bg'], foreground=self.colors['text'])
+        style.configure('Card.TLabel', background=self.colors['card_bg'], foreground=self.colors['text'])
+        style.configure('Title.TLabel', font=self.fonts['h1'], background=self.colors['bg'])
+        style.configure('CardTitle.TLabel', font=self.fonts['h2'], background=self.colors['card_bg'], foreground=self.colors['text'])
+        style.configure('Hint.TLabel', background=self.colors['card_bg'], foreground=self.colors['text_hint'], font=self.fonts['small'])
+        style.configure('Card.TCheckbutton', background=self.colors['card_bg'], font=self.fonts['body'])
+        
+        # 按钮通用样式
+        style.configure('TButton', font=self.fonts['body'], padding=[15, 8], borderwidth=0, relief='flat')
+        
+        # 主要按钮 (Primary)
+        style.configure('Primary.TButton', 
+                        background=self.colors['primary'], 
+                        foreground='white',
+                        font=self.fonts['body_bold'],
+                        padding=[30, 12])  # 加大按钮
+        style.map('Primary.TButton',
+                  background=[('active', self.colors['primary_hover']), ('pressed', self.colors['primary_hover'])])
+        
+        # 成功按钮 (Success)
+        style.configure('Success.TButton', 
+                        background=self.colors['success'], 
+                        foreground='white',
+                        font=self.fonts['body_bold'],
+                        padding=[25, 12])  # 加大按钮
+        style.map('Success.TButton',
+                  background=[('active', self.colors['success_hover']), ('pressed', self.colors['success_hover'])])
+        
+        # 警告按钮 (Warning)
+        style.configure('Warning.TButton', 
+                        background=self.colors['warning'], 
+                        foreground='white',
+                        font=self.fonts['body_bold'],
+                        padding=[25, 12])  # 加大按钮
+        style.map('Warning.TButton',
+                  background=[('active', self.colors['warning_hover']), ('pressed', self.colors['warning_hover'])])
+
+        # 危险按钮 (Danger)
+        style.configure('Danger.TButton', 
+                        background=self.colors['danger'], 
+                        foreground='white',
+                        font=self.fonts['body_bold'],
+                        padding=[20, 10])
+        style.map('Danger.TButton',
+                  background=[('active', self.colors['danger_hover']), ('pressed', self.colors['danger_hover'])])
+        
+        # 输入框 Entry
+        style.configure('TEntry', fieldbackground=self.colors['input_bg'], padding=[10, 8], borderwidth=1, relief='solid')
+        style.map('TEntry', bordercolor=[('focus', self.colors['primary'])], lightcolor=[('focus', self.colors['primary'])])
+        
+        # 下拉框 Combobox
+        style.configure('TCombobox', fieldbackground=self.colors['input_bg'], padding=[10, 8], arrowsize=15)
+        
+        # 进度条
+        style.configure('Horizontal.TProgressbar', background=self.colors['primary'], troughcolor='#e8e8e8', borderwidth=0)
+        
+        # 选项卡 Notebook
+        style.configure('TNotebook', background=self.colors['bg'], tabmargins=[10, 10, 0, 0], borderwidth=0)
+        style.configure('TNotebook.Tab', padding=[10, 8], font=self.fonts['body'], background='#e0e0e0', foreground=self.colors['text_secondary'], width=20, anchor='center')  # 固定宽度和居中
+        style.map('TNotebook.Tab',
+                  background=[('selected', self.colors['card_bg'])],
+                  foreground=[('selected', self.colors['primary'])],
+                  expand=[('selected', [0, 0, 0, 0])])
+
+        # Labelframe (兼容旧代码，作为卡片容器)
+        style.configure('TLabelframe', background=self.colors['card_bg'], relief='flat')
+        style.configure('TLabelframe.Label', background=self.colors['card_bg'], font=self.fonts['h2'], foreground=self.colors['text'])
+
+    def _create_card(self, parent, title=None):
+        """创建一个卡片容器"""
+        card = ttk.Frame(parent, style='Card.TFrame', padding=20)
+        if title:
+            ttk.Label(card, text=title, style='CardTitle.TLabel').pack(anchor='w', pady=(0, 15))
+        return card
+
+    def _build_ui(self):
+        """构建整体 UI 结构"""
+        main_frame = self.scrollable_frame
+        
+        # === 顶部标题栏 ===
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, pady=(20, 20), padx=20)
+        
+        # 使用安全的 Unicode 字符作为图标
+        icon_label = ttk.Label(header_frame, text="\U0001F6E0", font=("Microsoft YaHei UI", 32)) # 🛠️
+        icon_label.pack(side=tk.LEFT, padx=(0, 15))
+        
+        title_box = ttk.Frame(header_frame)
+        title_box.pack(side=tk.LEFT)
+        ttk.Label(title_box, text="SS14 汉化工作流工具", style='Title.TLabel').pack(anchor='w')
+        ttk.Label(title_box, text="v3.2 | 自动化提取与同步助手", font=self.fonts['small'], foreground=self.colors['text_secondary']).pack(anchor='w')
+        
+        # === 状态与进度卡片 ===
+        status_card = self._create_card(main_frame, "运行状态")
+        status_card.pack(fill=tk.X, padx=20, pady=(0, 20))
+        
+        # 进度条
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(status_card, variable=self.progress_var, maximum=100, style='Horizontal.TProgressbar')
+        self.progress_bar.pack(fill=tk.X, pady=(0, 10))
+        
+        # 状态文本行
+        status_row = ttk.Frame(status_card, style='Card.TFrame')
+        status_row.pack(fill=tk.X)
+        self.status_var = tk.StringVar(value="当前就绪")
+        ttk.Label(status_row, text="状态:", style='Card.TLabel', font=self.fonts['body_bold']).pack(side=tk.LEFT)
+        self.progress_label = ttk.Label(status_row, textvariable=self.status_var, style='Card.TLabel', foreground=self.colors['primary'])
+        self.progress_label.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # 停止按钮容器
+        self.stop_frame = ttk.Frame(status_row, style='Card.TFrame')
+        self.btn_stop = ttk.Button(self.stop_frame, text="⏹ 停止运行", command=self.do_stop, style='Danger.TButton')
+        self.btn_stop.pack(side=tk.RIGHT)
+        
+        # 一键工作流卡片 (移动到 Tabs 上方)
+        self._build_workflow_card(main_frame)
+        
+        # === 核心功能区 (Notebook) ===
+        content_frame = ttk.Frame(main_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
+        
+        self.notebook = ttk.Notebook(content_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # 创建标签页
+        self.tab_extract = ttk.Frame(self.notebook, style='Main.TFrame')
+        self.notebook.add(self.tab_extract, text="  提取原文  ")
+        self.setup_extract_tab()
+        
+        self.tab_sync = ttk.Frame(self.notebook, style='Main.TFrame')
+        self.notebook.add(self.tab_sync, text="  Paratranz 同步  ")
+        self.setup_sync_tab()
+        
+        self.tab_merge = ttk.Frame(self.notebook, style='Main.TFrame')
+        self.notebook.add(self.tab_merge, text="  合并翻译  ")
+        self.setup_merge_tab()
+        
+        self.tab_settings = ttk.Frame(self.notebook, style='Main.TFrame')
+        self.notebook.add(self.tab_settings, text="  设置  ")
+        self.setup_settings_tab()
+        
+        # === 日志区域 ===
+        log_card = self._create_card(main_frame, "运行日志")
+        log_card.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
+        
+        self.log_text = scrolledtext.ScrolledText(
+            log_card, height=12, state='disabled',
+            font=self.fonts['mono'],
+            bg='#1e272e', fg='#dfe6e9',
+            insertbackground='white',
+            relief='flat', padx=10, pady=10
+        )
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        
+        # 配置日志颜色标签
+        self.log_text.tag_configure('success', foreground='#00b894')
+        self.log_text.tag_configure('error', foreground='#ff7675')
+        self.log_text.tag_configure('warning', foreground='#fdcb6e')
+        self.log_text.tag_configure('info', foreground='#74b9ff')
+
+    def _build_workflow_card(self, parent):
+        """构建一键工作流卡片"""
+        card = self._create_card(parent)
+        card.pack(fill=tk.X, padx=20, pady=(0, 20))
+        
+        # 左右布局
+        left_side = ttk.Frame(card, style='Card.TFrame')
+        left_side.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        ttk.Label(left_side, text="⚡ 一键自动化工作流", style='CardTitle.TLabel', foreground=self.colors['primary']).pack(anchor='w')
+        desc = "自动按顺序执行：提取原文 → 上传到 Paratranz → 下载最新翻译 → 合并回游戏文件。\n适合日常同步更新使用。"
+        ttk.Label(left_side, text=desc, style='Card.TLabel', foreground=self.colors['text_secondary']).pack(anchor='w', pady=(5, 0))
+        
+        right_side = ttk.Frame(card, style='Card.TFrame')
+        right_side.pack(side=tk.RIGHT, padx=(20, 0))
+        
+        self.btn_workflow = ttk.Button(right_side, text="开始一键同步", command=self.do_full_workflow, style='Primary.TButton')
+        self.btn_workflow.pack()
 
     def auto_detect_directory(self):
         """启动时自动检测游戏目录"""
@@ -1230,6 +1729,61 @@ class App:
             self.merge_source_var.set(detected)
             self.log(f"自动检测到游戏目录: {detected}")
 
+    def _on_canvas_configure(self, event):
+        """当 Canvas 大小变化时，调整内部 Frame 宽度以匹配"""
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+    
+    def _bind_mousewheel(self):
+        """绑定鼠标滚轮事件（跨平台支持）"""
+        # 直接绑定到 root 窗口，确保在任何位置都能响应滚轮
+        self.root.bind("<MouseWheel>", self._on_mousewheel)
+        self.root.bind("<Button-4>", self._on_mousewheel)  # Linux scroll up
+        self.root.bind("<Button-5>", self._on_mousewheel)  # Linux scroll down
+        
+        # 同时也绑定到 canvas 和 scrollable_frame
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.scrollable_frame.bind("<MouseWheel>", self._on_mousewheel)
+        
+        # 递归绑定所有子控件
+        self.root.after(100, self._bind_children_mousewheel)
+    
+    def _bind_children_mousewheel(self):
+        """递归给所有子控件绑定鼠标滚轮事件"""
+        def bind_recursive(widget):
+            try:
+                widget.bind("<MouseWheel>", self._on_mousewheel)
+                widget.bind("<Button-4>", self._on_mousewheel)
+                widget.bind("<Button-5>", self._on_mousewheel)
+            except:
+                pass
+            for child in widget.winfo_children():
+                bind_recursive(child)
+        
+        bind_recursive(self.scrollable_frame)
+    
+    def _on_mousewheel(self, event):
+        """处理鼠标滚轮滚动"""
+        # 检查 canvas 是否存在且内容是否超出视口
+        try:
+            bbox = self.canvas.bbox("all")
+            if bbox:
+                canvas_height = self.canvas.winfo_height()
+                content_height = bbox[3] - bbox[1]
+                
+                # 只在内容超出视口时滚动
+                if content_height > canvas_height:
+                    # Windows/MacOS
+                    if hasattr(event, 'delta') and event.delta != 0:
+                        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                    # Linux scroll up
+                    elif event.num == 4:
+                        self.canvas.yview_scroll(-1, "units")
+                    # Linux scroll down
+                    elif event.num == 5:
+                        self.canvas.yview_scroll(1, "units")
+        except:
+            pass
+
     def load_config(self) -> Dict:
         default_config = {
             "extract_dir": "Resources/Prototypes",
@@ -1238,8 +1792,16 @@ class App:
             "pz_project_id": "16648",
             "merge_source": "Resources/Prototypes",
             "merge_input": "zh.json",
-            "download_path": "zh.json",  # 新增：下载保存路径
-            "translatable_fields": DEFAULT_TRANSLATABLE_FIELDS
+            "download_path": "zh.json",
+            "upload_path": "",  # 新增：自定义上传路径
+            "translatable_fields": DEFAULT_TRANSLATABLE_FIELDS,
+            # 路径历史记录
+            "history_extract_dir": [],
+            "history_extract_output": [],
+            "history_download_path": [],
+            "history_upload_path": [],  # 新增
+            "history_merge_input": [],
+            "history_merge_source": []
         }
         if os.path.exists(CONFIG_FILE):
             try:
@@ -1257,11 +1819,26 @@ class App:
         self.config["merge_source"] = self.merge_source_var.get()
         self.config["merge_input"] = self.merge_input_var.get()
         self.config["download_path"] = self.download_path_var.get()
+        if hasattr(self, 'upload_path_var'):
+            self.config["upload_path"] = self.upload_path_var.get()
         self.config["translatable_fields"] = [f.strip() for f in self.fields_var.get().split(',')]
         # 新增选项
         self.config["filter_ftl"] = self.filter_ftl_var.get()
         self.config["by_folder"] = self.by_folder_var.get()
-        self.config["folder_depth"] = int(self.folder_depth_var.get())
+        
+        # 保存路径历史记录（从各个 Combobox 获取）
+        if hasattr(self, 'combo_extract_dir'):
+            self.config["history_extract_dir"] = list(self.combo_extract_dir['values'])
+        if hasattr(self, 'combo_extract_output'):
+            self.config["history_extract_output"] = list(self.combo_extract_output['values'])
+        if hasattr(self, 'combo_download_path'):
+            self.config["history_download_path"] = list(self.combo_download_path['values'])
+        if hasattr(self, 'combo_upload_path'):
+            self.config["history_upload_path"] = list(self.combo_upload_path['values'])
+        if hasattr(self, 'combo_merge_input'):
+            self.config["history_merge_input"] = list(self.combo_merge_input['values'])
+        if hasattr(self, 'combo_merge_source'):
+            self.config["history_merge_source"] = list(self.combo_merge_source['values'])
         
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.config, f, indent=4, ensure_ascii=False)
@@ -1270,13 +1847,51 @@ class App:
         self.save_config()
         self.root.destroy()
 
-    def log(self, message: str):
-        def _log():
-            self.log_text.config(state='normal')
-            self.log_text.insert(tk.END, message + "\n")
-            self.log_text.see(tk.END)
-            self.log_text.config(state='disabled')
-        self.root.after(0, _log)
+    def update_gui_log(self):
+        """从队列中获取日志并更新到 GUI"""
+        logs = gui_log_handler.pop_logs()
+        if not logs:
+            return
+            
+        def _update():
+            try:
+                self.log_text.config(state='normal')
+                for levelname, message in logs:
+                    tag = None
+                    if levelname in ['ERROR', 'CRITICAL'] or '❌' in message or 'Error' in message:
+                        tag = 'error'
+                    elif levelname == 'WARNING' or '⚠️' in message or 'Warning' in message:
+                        tag = 'warning'
+                    elif '✅' in message or '成功' in message or '完成' in message:
+                        tag = 'success'
+                    elif 'INFO' in message or 'ℹ️' in message or '📂' in message or '📄' in message:
+                        tag = 'info'
+                    
+                    if tag:
+                        self.log_text.insert(tk.END, message + "\n", tag)
+                    else:
+                        self.log_text.insert(tk.END, message + "\n")
+                
+                # 限制缓冲区大小 (约 5000 行)
+                try:
+                    index = self.log_text.index('end-1c')
+                    line_count = int(index.split('.')[0])
+                    if line_count > 5000:
+                        self.log_text.delete('1.0', f'{line_count - 5000}.0')
+                except Exception:
+                    pass
+                
+                self.log_text.see(tk.END)
+            except Exception:
+                pass
+            finally:
+                self.log_text.config(state='disabled')
+            
+        self.root.after(0, _update)
+
+    def log(self, message: str, level: str = "INFO"):
+        """输出日志 (代理到全局 logging)"""
+        log(message, level)
 
     def update_progress(self, current: int, total: int, message: str = ""):
         def _update():
@@ -1291,19 +1906,35 @@ class App:
         if self.is_running:
             messagebox.showwarning("提示", "有操作正在进行中，请稍候...")
             return
+        
+        def _show_stop_button():
+            """显示停止按钮"""
+            self.stop_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        def _hide_stop_button():
+            """隐藏停止按钮"""
+            self.stop_frame.pack_forget()
             
         def _run():
             self.is_running = True
+            self.stop_requested = False
             self.status_var.set("正在运行...")
             self.progress_var.set(0)
             
-            # 设置进度回调
+            # 显示停止按钮
+            self.root.after(0, _show_stop_button)
+            
+            # 设置进度回调和停止检查回调
             set_progress_callback(self.update_progress)
+            set_stop_check_callback(lambda: self.stop_requested)
             
             try:
                 result = func(*args)
                 
-                if result is False:
+                if self.stop_requested:
+                    self.log("⏹ 操作已被用户停止")
+                    self.status_var.set("已停止")
+                elif result is False:
                     self.log("❌ 操作失败，请检查上方日志。")
                     self.status_var.set("操作失败")
                     self.root.after(0, lambda: messagebox.showerror("错误", "操作过程中发生错误，请查看日志。"))
@@ -1314,44 +1945,88 @@ class App:
                     self.root.after(0, lambda: messagebox.showinfo("成功", success_msg))
                     
             except Exception as e:
-                self.log(f"❌ 发生异常: {str(e)}")
-                self.status_var.set("发生错误")
-                self.root.after(0, lambda: messagebox.showerror("错误", f"运行异常: {e}"))
+                if self.stop_requested:
+                    self.log("⏹ 操作已被用户停止")
+                    self.status_var.set("已停止")
+                else:
+                    self.log(f"❌ 发生异常: {str(e)}")
+                    self.status_var.set("发生错误")
+                    self.root.after(0, lambda: messagebox.showerror("错误", f"运行异常: {e}"))
             finally:
                 self.is_running = False
+                self.stop_requested = False
                 set_progress_callback(None)
+                set_stop_check_callback(None)
+                # 隐藏停止按钮
+                self.root.after(0, _hide_stop_button)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def do_stop(self):
+        """请求停止当前操作"""
+        if self.is_running:
+            self.stop_requested = True
+            self.log("⏳ 正在停止，请稍候...")
+            self.status_var.set("正在停止...")
 
     # ===== 界面设置 =====
 
     def setup_extract_tab(self):
         frame = self.tab_extract
-        ttk.Label(frame, text="扫描目录:").grid(row=0, column=0, sticky='w', pady=5)
-        self.extract_dir_var = tk.StringVar(value=self.config["extract_dir"])
-        ttk.Entry(frame, textvariable=self.extract_dir_var, width=50).grid(row=0, column=1, padx=5)
-        ttk.Button(frame, text="浏览...", command=lambda: self.select_folder(self.extract_dir_var)).grid(row=0, column=2)
         
-        ttk.Label(frame, text="输出文件/目录:").grid(row=1, column=0, sticky='w', pady=5)
+        # 输入区域容器
+        input_card = self._create_card(frame, '📁 路径设置')
+        input_card.pack(fill=tk.X, pady=(0, 20))
+        
+        # 扫描目录
+        row1 = ttk.Frame(input_card, style='Card.TFrame')
+        row1.pack(fill=tk.X, pady=5)
+        ttk.Label(row1, text="扫描目录:", width=14, anchor='e', style='Card.TLabel').pack(side=tk.LEFT, padx=(0, 10))
+        self.extract_dir_var = tk.StringVar(value=self.config["extract_dir"])
+        self.combo_extract_dir = ttk.Combobox(row1, textvariable=self.extract_dir_var, width=50)
+        self.combo_extract_dir['values'] = self.config.get("history_extract_dir", [])
+        self.combo_extract_dir.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.combo_extract_dir.bind("<Button-3>", 
+            lambda e: self.show_history_context_menu(e, self.combo_extract_dir, self.extract_dir_var))
+        ttk.Button(row1, text="浏览...", 
+            command=lambda: self.select_folder(self.extract_dir_var, self.combo_extract_dir)).pack(side=tk.LEFT)
+        
+        # 输出文件/目录
+        row2 = ttk.Frame(input_card, style='Card.TFrame')
+        row2.pack(fill=tk.X, pady=5)
+        ttk.Label(row2, text="输出文件/目录:", width=14, anchor='e', style='Card.TLabel').pack(side=tk.LEFT, padx=(0, 10))
         self.extract_output_var = tk.StringVar(value=self.config["extract_output"])
-        ttk.Entry(frame, textvariable=self.extract_output_var, width=50).grid(row=1, column=1, padx=5)
-        ttk.Button(frame, text="浏览...", command=self._select_extract_output).grid(row=1, column=2)
+        self.combo_extract_output = ttk.Combobox(row2, textvariable=self.extract_output_var, width=50)
+        self.combo_extract_output['values'] = self.config.get("history_extract_output", [])
+        self.combo_extract_output.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.combo_extract_output.bind("<Button-3>", 
+            lambda e: self.show_history_context_menu(e, self.combo_extract_output, self.extract_output_var))
+        ttk.Button(row2, text="浏览...", command=self._select_extract_output).pack(side=tk.LEFT)
+        
+        # 提示标签
+        ttk.Label(input_card, text="💡 右键点击输入框可管理历史记录", 
+                  style='Hint.TLabel').pack(anchor='w', pady=(5, 0))
         
         # 选项区域
-        options_frame = ttk.LabelFrame(frame, text="提取选项", padding=10)
-        options_frame.grid(row=2, column=0, columnspan=3, sticky='ew', pady=10, padx=5)
+        options_card = self._create_card(frame, "⚙️ 提取选项")
+        options_card.pack(fill=tk.X, pady=(0, 20))
         
         # FTL 过滤选项
         self.filter_ftl_var = tk.BooleanVar(value=self.config.get("filter_ftl", True))
-        ttk.Checkbutton(options_frame, text="过滤 FTL 本地化键值 (跳过 loadout-group-weapon 类)", 
-                       variable=self.filter_ftl_var).grid(row=0, column=0, sticky='w')
+        ttk.Checkbutton(options_card, text="过滤 FTL 本地化键值 (跳过 loadout-group-weapon 类)", 
+                       variable=self.filter_ftl_var, style='Card.TCheckbutton').pack(anchor='w', pady=3)
         
         # 按文件夹分组选项
         self.by_folder_var = tk.BooleanVar(value=self.config.get("by_folder", False))
-        ttk.Checkbutton(options_frame, text="按文件夹分组提取 (保留完整目录结构，生成多个 JSON)", 
-                       variable=self.by_folder_var).grid(row=1, column=0, sticky='w')
+        ttk.Checkbutton(options_card, text="按文件夹分组提取 (保留完整目录结构，生成多个 JSON)", 
+                       variable=self.by_folder_var, style='Card.TCheckbutton').pack(anchor='w', pady=3)
         
-        ttk.Button(frame, text="开始提取", command=self.do_extract).grid(row=3, column=1, pady=10, ipadx=20)
+        # 按钮居中区域
+        btn_frame = ttk.Frame(frame, style='Main.TFrame')
+        btn_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Button(btn_frame, text="▶️ 开始提取", command=self.do_extract,
+                   style='Primary.TButton').pack(anchor='center')
 
     def _select_extract_output(self):
         """选择提取输出位置（文件或目录）"""
@@ -1360,6 +2035,7 @@ class App:
             folder = filedialog.askdirectory(title="选择输出目录")
             if folder:
                 self.extract_output_var.set(folder)
+                self.add_to_history(self.combo_extract_output, folder)
         else:
             # 单文件模式：选择文件
             file = filedialog.asksaveasfilename(
@@ -1369,29 +2045,82 @@ class App:
             )
             if file:
                 self.extract_output_var.set(file)
+                self.add_to_history(self.combo_extract_output, file)
 
     def setup_sync_tab(self):
         frame = self.tab_sync
-        ttk.Label(frame, text="项目 ID:").grid(row=0, column=0, sticky='w', pady=5)
+        
+        # API 设置区域
+        api_card = self._create_card(frame, "\U0001F511 API 设置")
+        api_card.pack(fill=tk.X, pady=(0, 20))
+        
+        # 项目 ID
+        row1 = ttk.Frame(api_card, style='Card.TFrame')
+        row1.pack(fill=tk.X, pady=5)
+        ttk.Label(row1, text="项目 ID:", width=14, anchor='e', style='Card.TLabel').pack(side=tk.LEFT, padx=(0, 10))
         self.pz_project_id_var = tk.StringVar(value=self.config["pz_project_id"])
-        ttk.Entry(frame, textvariable=self.pz_project_id_var, width=20).grid(row=0, column=1, sticky='w', padx=5)
+        ttk.Entry(row1, textvariable=self.pz_project_id_var, width=20).pack(side=tk.LEFT)
+        ttk.Label(row1, text="(Paratranz 项目编号)", 
+                  style='Hint.TLabel').pack(side=tk.LEFT, padx=(10, 0))
         
-        ttk.Label(frame, text="API Token:").grid(row=1, column=0, sticky='w', pady=5)
+        # API Token
+        row2 = ttk.Frame(api_card, style='Card.TFrame')
+        row2.pack(fill=tk.X, pady=5)
+        ttk.Label(row2, text="API Token:", width=14, anchor='e', style='Card.TLabel').pack(side=tk.LEFT, padx=(0, 10))
         self.pz_token_var = tk.StringVar(value=self.config["pz_token"])
-        ttk.Entry(frame, textvariable=self.pz_token_var, width=50, show="*").grid(row=1, column=1, padx=5)
+        ttk.Entry(row2, textvariable=self.pz_token_var, width=50, show="*").pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-        # 下载位置
-        ttk.Label(frame, text="下载保存路径:").grid(row=2, column=0, sticky='w', pady=5)
+        # 文件路径设置区域
+        path_card = self._create_card(frame, "\U0001F4C1 文件路径")
+        path_card.pack(fill=tk.X, pady=(0, 20))
+        
+        # 上传路径
+        row3 = ttk.Frame(path_card, style='Card.TFrame')
+        row3.pack(fill=tk.X, pady=5)
+        ttk.Label(row3, text="上传文件/目录:", width=14, anchor='e', style='Card.TLabel').pack(side=tk.LEFT, padx=(0, 10))
+        self.upload_path_var = tk.StringVar(value=self.config.get("upload_path", ""))
+        self.combo_upload_path = ttk.Combobox(row3, textvariable=self.upload_path_var, width=42)
+        self.combo_upload_path['values'] = self.config.get("history_upload_path", [])
+        self.combo_upload_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.combo_upload_path.bind("<Button-3>", 
+            lambda e: self.show_history_context_menu(e, self.combo_upload_path, self.upload_path_var))
+        
+        # 浏览按钮区域
+        browse_frame = ttk.Frame(row3, style='Card.TFrame')
+        browse_frame.pack(side=tk.LEFT)
+        ttk.Button(browse_frame, text="📄 文件", width=7,
+            command=self._select_upload_file).pack(side=tk.LEFT, padx=(0, 3))
+        ttk.Button(browse_frame, text="📁 目录", width=7,
+            command=self._select_upload_folder).pack(side=tk.LEFT)
+        
+        # Download Path
+        row4 = ttk.Frame(path_card, style='Card.TFrame')
+        row4.pack(fill=tk.X, pady=5)
+        ttk.Label(row4, text="下载保存路径:", width=14, anchor='e', style='Card.TLabel').pack(side=tk.LEFT, padx=(0, 10))
         self.download_path_var = tk.StringVar(value=self.config.get("download_path", "zh.json"))
-        ttk.Entry(frame, textvariable=self.download_path_var, width=50).grid(row=2, column=1, padx=5)
-        ttk.Button(frame, text="浏览...", command=self._select_download_path).grid(row=2, column=2)
+        self.combo_download_path = ttk.Combobox(row4, textvariable=self.download_path_var, width=42)
+        self.combo_download_path['values'] = self.config.get("history_download_path", [])
+        self.combo_download_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.combo_download_path.bind("<Button-3>", 
+            lambda e: self.show_history_context_menu(e, self.combo_download_path, self.download_path_var))
+        ttk.Button(row4, text="浏览...", command=self._select_download_path).pack(side=tk.LEFT)
         
-        btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=3, column=0, columnspan=3, pady=20)
+        # Hint
+        ttk.Label(path_card, text="💡 右键点击输入框可管理历史记录", 
+                  style='Hint.TLabel').pack(anchor='w', pady=(5, 0))
         
-        ttk.Button(btn_frame, text="测试连接", command=self.do_test_connection).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="⬆️ 上传", command=self.do_upload).pack(side=tk.LEFT, padx=5, ipadx=10)
-        ttk.Button(btn_frame, text="⬇️ 下载", command=self.do_download).pack(side=tk.LEFT, padx=5, ipadx=10)
+        # Buttons
+        btn_frame = ttk.Frame(frame, style='Main.TFrame')
+        btn_frame.pack(fill=tk.X, pady=10)
+        
+        btn_inner = ttk.Frame(btn_frame, style='Main.TFrame')
+        btn_inner.pack(anchor='center')
+        
+        ttk.Button(btn_inner, text="🔗 测试连接", command=self.do_test_connection).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_inner, text="⬆️ 上传", command=self.do_upload,
+                   style='Primary.TButton').pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_inner, text="⬇️ 下载", command=self.do_download,
+                   style='Success.TButton').pack(side=tk.LEFT, padx=5)
 
     def _select_download_path(self):
         """选择下载保存位置"""
@@ -1402,44 +2131,189 @@ class App:
         )
         if file:
             self.download_path_var.set(file)
+            self.add_to_history(self.combo_download_path, file)
+
+    def _select_upload_file(self):
+        """选择要上传的文件"""
+        file = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if file:
+            self.upload_path_var.set(file)
+            self.add_to_history(self.combo_upload_path, file)
+
+    def _select_upload_folder(self):
+        """选择要上传的目录"""
+        folder = filedialog.askdirectory(title="选择包含 JSON 文件的目录")
+        if folder:
+            self.upload_path_var.set(folder)
+            self.add_to_history(self.combo_upload_path, folder)
 
     def setup_merge_tab(self):
         frame = self.tab_merge
-        ttk.Label(frame, text="翻译文件:").grid(row=0, column=0, sticky='w', pady=5)
+        
+        # 文件设置区域
+        file_card = self._create_card(frame, "\U0001F4C4 文件设置")
+        file_card.pack(fill=tk.X, pady=(0, 20))
+        
+        # 翻译文件
+        row1 = ttk.Frame(file_card, style='Card.TFrame')
+        row1.pack(fill=tk.X, pady=5)
+        ttk.Label(row1, text="翻译文件:", width=12, anchor='e', style='Card.TLabel').pack(side=tk.LEFT, padx=(0, 10))
         self.merge_input_var = tk.StringVar(value=self.config["merge_input"])
-        ttk.Entry(frame, textvariable=self.merge_input_var, width=50).grid(row=0, column=1, padx=5)
-        ttk.Button(frame, text="浏览...", command=lambda: self.select_file(self.merge_input_var)).grid(row=0, column=2)
+        self.combo_merge_input = ttk.Combobox(row1, textvariable=self.merge_input_var, width=50)
+        self.combo_merge_input['values'] = self.config.get("history_merge_input", [])
+        self.combo_merge_input.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.combo_merge_input.bind("<Button-3>", 
+            lambda e: self.show_history_context_menu(e, self.combo_merge_input, self.merge_input_var))
+        ttk.Button(row1, text="浏览...", 
+            command=lambda: self.select_file(self.merge_input_var, self.combo_merge_input)).pack(side=tk.LEFT)
         
-        ttk.Label(frame, text="目标目录:").grid(row=1, column=0, sticky='w', pady=5)
+        # 目标目录
+        row2 = ttk.Frame(file_card, style='Card.TFrame')
+        row2.pack(fill=tk.X, pady=5)
+        ttk.Label(row2, text="目标目录:", width=12, anchor='e', style='Card.TLabel').pack(side=tk.LEFT, padx=(0, 10))
         self.merge_source_var = tk.StringVar(value=self.config["merge_source"])
-        ttk.Entry(frame, textvariable=self.merge_source_var, width=50).grid(row=1, column=1, padx=5)
-        ttk.Button(frame, text="浏览...", command=lambda: self.select_folder(self.merge_source_var)).grid(row=1, column=2)
+        self.combo_merge_source = ttk.Combobox(row2, textvariable=self.merge_source_var, width=50)
+        self.combo_merge_source['values'] = self.config.get("history_merge_source", [])
+        self.combo_merge_source.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.combo_merge_source.bind("<Button-3>", 
+            lambda e: self.show_history_context_menu(e, self.combo_merge_source, self.merge_source_var))
+        ttk.Button(row2, text="浏览...", 
+            command=lambda: self.select_folder(self.merge_source_var, self.combo_merge_source)).pack(side=tk.LEFT)
         
-        ttk.Label(frame, text="注意：操作前建议备份目标目录。", foreground="#d9534f").grid(row=2, column=0, columnspan=3, pady=10)
+        # 提示标签
+        ttk.Label(file_card, text="💡 右键点击输入框可管理历史记录", 
+                  style='Hint.TLabel').pack(anchor='w', pady=(5, 0))
         
-        ttk.Button(frame, text="开始合并", command=self.do_merge).grid(row=3, column=1, pady=10, ipadx=20)
+        # 警告区域
+        warning_card = self._create_card(frame)
+        warning_card.pack(fill=tk.X, pady=(0, 20))
+        
+        warning_label = ttk.Label(warning_card, 
+            text="⚠️ 注意：合并操作会修改目标目录中的 YAML 文件，操作前建议备份！",
+            foreground=self.colors['danger'],
+            font=self.default_font_bold, style='Card.TLabel')
+        warning_label.pack(anchor='center')
+        
+        # 按钮居中区域
+        btn_frame = ttk.Frame(frame, style='Main.TFrame')
+        btn_frame.pack(fill=tk.X, pady=15)
+        
+        ttk.Button(btn_frame, text="🔀 开始合并", command=self.do_merge,
+                   style='Warning.TButton').pack(anchor='center')
 
     def setup_settings_tab(self):
         frame = self.tab_settings
         
-        ttk.Label(frame, text="可翻译字段 (逗号分隔):").grid(row=0, column=0, sticky='w', pady=5)
+        # 字段设置区域
+        fields_card = self._create_card(frame, "\U0001F527 翻译字段设置")
+        fields_card.pack(fill=tk.X, pady=(0, 20))
+        
+        row1 = ttk.Frame(fields_card, style='Card.TFrame')
+        row1.pack(fill=tk.X, pady=5)
+        ttk.Label(row1, text="可翻译字段:", width=12, anchor='e', style='Card.TLabel').pack(side=tk.LEFT, padx=(0, 10))
         fields_str = ', '.join(self.config.get("translatable_fields", DEFAULT_TRANSLATABLE_FIELDS))
         self.fields_var = tk.StringVar(value=fields_str)
-        ttk.Entry(frame, textvariable=self.fields_var, width=50).grid(row=0, column=1, padx=5)
+        ttk.Entry(row1, textvariable=self.fields_var, width=50).pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-        ttk.Label(frame, text="默认: name, description", foreground="gray").grid(row=1, column=1, sticky='w')
+        ttk.Label(fields_card, text="💡 多个字段用逗号分隔，默认: name, description", 
+                  style='Hint.TLabel').pack(anchor='w', pady=(5, 0))
         
-        ttk.Button(frame, text="保存设置", command=self.save_config).grid(row=2, column=1, pady=20)
+        # 说明区域
+        info_card = self._create_card(frame, "\U00002139\U0000FE0F 使用说明")
+        info_card.pack(fill=tk.X, pady=(0, 20))
+        
+        info_text = """工作流程说明：
+1. 提取原文：从游戏 YAML 文件中提取可翻译的文本
+2. Paratranz 同步：将提取的文本上传到 Paratranz 平台进行翻译
+3. 下载翻译：从 Paratranz 下载翻译完成的文本
+4. 合并翻译：将翻译文本合并回游戏 YAML 文件
 
-    def select_folder(self, var):
+推荐使用「一键工作流」自动完成以上所有步骤。"""
+        
+        ttk.Label(info_card, text=info_text, justify='left',
+                  style='Card.TLabel').pack(anchor='w')
+        
+        # 按钮居中区域
+        btn_frame = ttk.Frame(frame, style='Main.TFrame')
+        btn_frame.pack(fill=tk.X, pady=20)
+        
+        ttk.Button(btn_frame, text="💾 保存设置", command=self.save_config,
+                   style='Primary.TButton').pack(anchor='center')
+
+    def select_folder(self, var, combo=None):
+        """选择文件夹，可选地更新到 Combobox 历史"""
         folder = filedialog.askdirectory()
         if folder:
             var.set(folder)
+            if combo:
+                self.add_to_history(combo, folder)
 
-    def select_file(self, var):
-        file = filedialog.askopenfilename(filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+    def select_file(self, var, combo=None, filetypes=None):
+        """选择文件，可选地更新到 Combobox 历史"""
+        if filetypes is None:
+            filetypes = [("JSON files", "*.json"), ("All files", "*.*")]
+        file = filedialog.askopenfilename(filetypes=filetypes)
         if file:
             var.set(file)
+            if combo:
+                self.add_to_history(combo, file)
+
+    def add_to_history(self, combo, value, max_items=15):
+        """将新值添加到 Combobox 历史记录（最多保留 max_items 条）"""
+        if not value or not value.strip():
+            return
+        value = value.strip()
+        current_values = list(combo['values'])
+        # 去重：如果已存在则移到最前面
+        if value in current_values:
+            current_values.remove(value)
+        current_values.insert(0, value)
+        # 限制最大数量
+        combo['values'] = current_values[:max_items]
+
+    def show_history_context_menu(self, event, combo, var):
+        """显示右键菜单，用于管理历史记录"""
+        menu = tk.Menu(self.root, tearoff=0)
+        current_values = list(combo['values'])
+        
+        if not current_values:
+            menu.add_command(label="(无历史记录)", state='disabled')
+        else:
+            menu.add_command(label="📋 历史记录", state='disabled')
+            menu.add_separator()
+            # 显示最多10条历史记录供选择
+            for i, val in enumerate(current_values[:10]):
+                display = val if len(val) < 50 else "..." + val[-47:]
+                menu.add_command(label=f"  {display}", 
+                               command=lambda v=val: var.set(v))
+            if len(current_values) > 10:
+                menu.add_command(label=f"  ...还有 {len(current_values) - 10} 条", state='disabled')
+            
+            menu.add_separator()
+            menu.add_command(label="🗑️ 删除当前选中项", 
+                           command=lambda: self.delete_history_item(combo, var.get()))
+            menu.add_command(label="🗑️ 清空所有历史", 
+                           command=lambda: self.clear_history(combo))
+        
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def delete_history_item(self, combo, value):
+        """删除指定的历史记录项"""
+        current_values = list(combo['values'])
+        if value in current_values:
+            current_values.remove(value)
+            combo['values'] = current_values
+            self.log(f"已删除历史记录: {value}")
+
+    def clear_history(self, combo):
+        """清空所有历史记录"""
+        combo['values'] = []
+        self.log("已清空历史记录")
 
     # ===== 操作函数 =====
 
@@ -1484,12 +2358,20 @@ class App:
     def do_upload(self):
         token = self.pz_token_var.get()
         pid = self.pz_project_id_var.get()
-        target = self.extract_output_var.get()
+        
+        # 优先使用同步选项卡的上传路径，如果为空则回退到提取输出路径
+        target = self.upload_path_var.get().strip() if hasattr(self, 'upload_path_var') else ""
+        if not target:
+            target = self.extract_output_var.get()
+        
         if not token:
             messagebox.showwarning("提示", "请输入 Token")
             return
         if not target:
-            messagebox.showwarning("提示", "请指定要上传的文件或目录")
+            messagebox.showwarning("提示", "请在「上传文件/目录」中指定要上传的路径")
+            return
+        if not os.path.exists(target):
+            messagebox.showwarning("提示", f"指定的路径不存在: {target}")
             return
         
         def _upload():
@@ -1500,6 +2382,7 @@ class App:
                 result = client.upload_folder(target)
                 return result.get("uploaded", 0) > 0 or result.get("failed", 0) == 0
             else:
+                self.log(f"📄 上传单文件: {target}")
                 return client.upload_file(target)
         
         self.run_in_thread(_upload, success_msg="上传成功！")
@@ -1561,6 +2444,7 @@ class App:
 # ==================== 主程序入口 (Main) ====================
 
 if __name__ == "__main__":
+    setup_logging()
     # 如果没有命令行参数，启动 GUI
     if len(sys.argv) == 1:
         try:
@@ -1604,6 +2488,15 @@ if __name__ == "__main__":
         p_upload.add_argument('--folder', help='Folder of JSON files to upload (batch mode)')
         p_upload.add_argument('--project_id', type=int, default=os.environ.get('PZ_PROJECT_ID'))
         p_upload.add_argument('--token', default=os.environ.get('PARATRANZ_TOKEN'))
+        
+        # Upload-Translation 命令（上传译文）
+        p_upload_trans = subparsers.add_parser('upload-translation', help='Upload translations to Paratranz')
+        p_upload_trans.add_argument('--file', help='Single translation file to upload')
+        p_upload_trans.add_argument('--folder', help='Folder of translation JSON files to upload (batch mode)')
+        p_upload_trans.add_argument('--force', action='store_true', 
+                                    help='Force overwrite translations that have been manually edited')
+        p_upload_trans.add_argument('--project_id', type=int, default=os.environ.get('PZ_PROJECT_ID'))
+        p_upload_trans.add_argument('--token', default=os.environ.get('PARATRANZ_TOKEN'))
         
         # Download 命令
         p_download = subparsers.add_parser('download', help='Download from Paratranz')
@@ -1663,6 +2556,16 @@ if __name__ == "__main__":
                 client.upload_file(args.file)
             else:
                 log("请指定 --file 或 --folder 参数", "ERROR")
+        
+        elif args.command == 'upload-translation':
+            client = PZClient(args.project_id, args.token)
+            if args.folder:
+                # 批量上传译文模式
+                client.upload_translation_folder(args.folder, force=args.force)
+            elif args.file:
+                client.upload_translation(args.file, force=args.force)
+            else:
+                log("请指定 --file 或 --folder 参数", "ERROR")
             
         elif args.command == 'download':
             client = PZClient(args.project_id, args.token)
@@ -1673,7 +2576,9 @@ if __name__ == "__main__":
             run_full_workflow(
                 args.scan_dir, args.output_json, args.translation_json,
                 args.project_id, args.token, args.output_dir,
-                incremental=args.incremental, by_folder=args.by_folder,
-                filter_ftl=filter_ftl
+                fields=None,  # CLI模式使用默认字段
+                by_folder=args.by_folder,
+                filter_ftl=filter_ftl,
+                incremental=args.incremental
             )
 

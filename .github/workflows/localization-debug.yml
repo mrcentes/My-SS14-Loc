@@ -9,7 +9,7 @@ env:
   GAME_CONTENT_DIR: Resources/Prototypes
   TRANSLATED_CONTENT_DIR: Content
   LOCK_FILE: upstream-commit.lock
-  EXTRACTED_FILE: en.json
+  EXTRACTED_FILE: extracted
   TRANSLATED_FILE: zh.json
   # PZ_PROJECT_ID: 16648 # Not needed for dry run, but good to keep structure
 
@@ -50,13 +50,13 @@ jobs:
         if: env.NEEDS_EXTRACTION == 'true'
         run: |
           echo "Running extraction script..."
-          # Note: We can test flags here like --by-folder if you want to test that feature later
-          python ss14_tracker.py extract --source upstream_repo --target_folders ${{ env.GAME_CONTENT_DIR }} --output ${{ env.EXTRACTED_FILE }} --incremental
+          # Note: Added --by-folder flag
+          python ss14_tracker.py extract --source upstream_repo --target_folders ${{ env.GAME_CONTENT_DIR }} --output ${{ env.EXTRACTED_FILE }} --incremental --by-folder
 
       - name: 7. [Mock Upload] Skip Paratranz Upload
         run: |
           echo "🚫 DRY RUN: Upload to Paratranz SKIPPED to protect data."
-          echo "Generated file ${{ env.EXTRACTED_FILE }} is ready for inspection."
+          echo "Generated content in ${{ env.EXTRACTED_FILE }} is ready for inspection."
 
       - name: 8. [Mock Sync] Simulate Download
         run: |

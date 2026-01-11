@@ -13,7 +13,7 @@ env:
   LOCK_FILE: upstream-commit.lock
   EXTRACTED_FILE: en.json
   TRANSLATED_FILE: zh.json
-  PZ_PROJECT_ID: 16648  # Replace with your Paratranz project ID
+  PZ_PROJECT_ID: 16648  # Paratranz项目ID
 
 jobs:
   synchronize:
