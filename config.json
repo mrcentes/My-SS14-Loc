@@ -1,0 +1,18 @@
+{
+    "extract_dir": "F:\\Github\\Monolith-CN\\Resources\\Prototypes\\_Mono\\Loadouts\\USSP",
+    "extract_output": "ussp_en.json",
+    "pz_token": "f382a3a59df55eadb68fc79f5372e851",
+    "pz_project_id": "16648",
+    "merge_source": "Resources/Prototypes",
+    "merge_input": "zh.json",
+    "download_path": "zh.json",
+    "translatable_fields": [
+        "name",
+        "description"
+    ],
+    "python_path": "python",
+    "structure": false,
+    "filter_ftl": true,
+    "by_folder": true,
+    "folder_depth": 3
+}

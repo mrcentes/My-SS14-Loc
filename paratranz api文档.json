@@ -1,0 +1,757 @@
+{
+    "openapi": "3.0.3",
+    "info": {
+        "title": "ParaTranz OpenAPI 文档",
+        "description": "本文档介绍 ParaTranz.cn 平台的 API\n## 获取 Token\n首先需要获取API Token，可以在个人资料页面中的设置选项卡获取API Token， 调用 API 时将 Token 直接放在请求头的 Authorization 中即可。\n\ncURL 使用示例:\n\n    $ curl --header \"Authorization: Bearer {TOKEN}\" https://paratranz.cn/api/projects\n\n## 错误处理\nAPI 返回的错误格式如下\n\n    {\n      \"message\": \"ERROR MESSAGE\", // 错误消息\n      \"code\": 10000 // 5位错误代码，注意与下面的HTTP状态码区分，部分接口不返回\n    }\n\nHTTP状态码有以下几种类型\n  * 400 - 调用参数错误\n  * 401 - Token 错误或过期\n  * 403 - 没有相关权限\n  * 404 - 资源不存在\n  * 405 - 没有相关HTTP方法，一般为调用方法错误\n  * 429 - 调用过于频繁，具体频率限制请看上一节\n  * 500 - 服务器错误，一般会提供具体出错的位置，请发送给站长方便定位问题\n  * 502 - 服务器无响应，部分用户被墙时可能会遇到\n  * 503 - 服务不可用\n  * 504 - 服务超时，访问量大时会出现\n\n## SDK 及 JSON 格式的 API 文档\n本文档遵循 OpenAPI 规范，您可以 [获取 JSON 格式](/api-docs?format=json) 或 [YML 格式](/api-docs?format=yml) 的文档，并使用 [OpenAPI Generator](https://github.com/OpenAPITools/openapi-generator) 生成各种语言的 SDK",
+        "version": "0.5.0",
+        "contact": {
+            "email": "master@mail.paratranz.com"
+        }
+    },
+    "servers": [
+        {
+            "url": "https://paratranz.cn/api"
+        }
+    ],
+    "tags": [
+        {
+            "name": "Projects",
+            "description": "项目相关接口"
+        },
+        {
+            "name": "Strings",
+            "description": "词条相关接口"
+        },
+        {
+            "name": "Files",
+            "description": "文件相关接口"
+        },
+        {
+            "name": "Members",
+            "description": "成员相关接口"
+        },
+        {
+            "name": "Artifacts",
+            "description": "导出压缩包及下载相关接口"
+        }
+    ],
+    "security": [
+        {
+            "Token": []
+        }
+    ],
+    "paths": {
+        "/projects": {
+            "get": {
+                "operationId": "getProjects",
+                "tags": [
+                    "Projects"
+                ],
+                "summary": "项目列表",
+                "description": "获取项目列表",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/pageSize"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/ProjectList"
+                    }
+                }
+            },
+            "post": {
+                "operationId": "createProject",
+                "tags": [
+                    "Projects"
+                ],
+                "summary": "创建项目",
+                "description": "创建项目",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Project"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "创建成功",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Project"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "数据有误"
+                    },
+                    "403": {
+                        "description": "没有权限创建项目"
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                }
+            ],
+            "get": {
+                "operationId": "getProject",
+                "tags": [
+                    "Projects"
+                ],
+                "summary": "项目信息",
+                "description": "通过ID获取项目信息",
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/ProjectItem"
+                    }
+                }
+            },
+            "put": {
+                "operationId": "saveProject",
+                "tags": [
+                    "Projects"
+                ],
+                "summary": "更新项目",
+                "description": "通过ID更新项目信息",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Project"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/ProjectItem"
+                    }
+                }
+            },
+            "delete": {
+                "operationId": "deleteProject",
+                "tags": [
+                    "Projects"
+                ],
+                "summary": "删除项目",
+                "description": "通过ID删除项目",
+                "responses": {
+                    "200": {
+                        "description": "删除成功"
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}/files": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                }
+            ],
+            "get": {
+                "operationId": "getFiles",
+                "summary": "文件列表",
+                "description": "获取项目文件列表",
+                "tags": [
+                    "Files"
+                ],
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/FileList"
+                    }
+                }
+            },
+            "post": {
+                "operationId": "createFile",
+                "summary": "上传文件",
+                "description": "上传并创建文件，文件名不能与 path 指定的目录中的文件冲突",
+                "tags": [
+                    "Files"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "file": {
+                                        "type": "string",
+                                        "description": "文件数据，文件名由此项的文件名决定",
+                                        "format": "binary"
+                                    },
+                                    "path": {
+                                        "type": "string",
+                                        "description": "文件路径",
+                                        "example": "path/to/"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "文件上传成功",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "file": {
+                                            "$ref": "#/components/schemas/File"
+                                        },
+                                        "revision": {
+                                            "$ref": "#/components/schemas/Revision"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}/files/{fileId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                },
+                {
+                    "$ref": "#/components/parameters/fileId"
+                }
+            ],
+            "get": {
+                "operationId": "getFile",
+                "summary": "文件信息",
+                "description": "通过ID获取文件信息",
+                "tags": [
+                    "Files"
+                ],
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/FileItem"
+                    }
+                }
+            },
+            "post": {
+                "operationId": "updateFile",
+                "tags": [
+                    "Files"
+                ],
+                "summary": "更新文件",
+                "description": "\n通过ID上传并更新文件。\n\n注意此接口仅更新原文，不对译文做改动，\n更新译文请用下方的**更新文件接口** `POST /projects/{projectId}/files/{fileId}/translation`\n",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "file": {
+                                        "type": "string",
+                                        "description": "文件数据，格式需与创建时的文件保持一致，也可上传标准JSON格式（文件名需为原文件名加.json）",
+                                        "format": "binary"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/FileItem"
+                    }
+                }
+            },
+            "put": {
+                "operationId": "saveFile",
+                "tags": [
+                    "Files"
+                ],
+                "summary": "修改文件",
+                "description": "通过ID修改文件信息",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "description": "文件名，需填写完整路径"
+                                    },
+                                    "extra": {
+                                        "type": "object",
+                                        "description": "JSON 格式，可随意填写需要的保存的其他信息"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/FileItem"
+                    }
+                }
+            },
+            "delete": {
+                "operationId": "deleteFile",
+                "tags": [
+                    "Files"
+                ],
+                "summary": "删除文件",
+                "description": "通过ID删除文件",
+                "responses": {
+                    "200": {
+                        "description": "文件已删除"
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}/files/{fileId}/translation": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                },
+                {
+                    "$ref": "#/components/parameters/fileId"
+                }
+            ],
+            "get": {
+                "operationId": "getFileTranslation",
+                "summary": "文件翻译",
+                "description": "通过ID获取文件翻译数据",
+                "tags": [
+                    "Files"
+                ],
+                "responses": {
+                    "200": {
+                        "description": "返回JSON原始数据文件"
+                    }
+                }
+            },
+            "post": {
+                "operationId": "updateFileTranslation",
+                "tags": [
+                    "Files"
+                ],
+                "summary": "更新文件翻译",
+                "description": "通过ID上传并更新文件中的词条翻译。\n\n注意此接口仅更新译文，不对原文做改动",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "file": {
+                                        "type": "string",
+                                        "description": "文件数据，格式需与创建时的文件保持一致，也可上传标准JSON格式（文件名需为原文件名加.json）",
+                                        "format": "binary"
+                                    },
+                                    "force": {
+                                        "type": "boolean",
+                                        "description": "是否强制覆盖翻译，默认为 `false`，此时翻译仅会覆盖未人工编辑过的词条"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/FileItem"
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}/strings": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                }
+            ],
+            "get": {
+                "operationId": "getStrings",
+                "tags": [
+                    "Strings"
+                ],
+                "summary": "词条列表",
+                "parameters": [
+                    {
+                        "$ref": "#/components/parameters/page"
+                    },
+                    {
+                        "$ref": "#/components/parameters/pageSize"
+                    },
+                    {
+                        "in": "query",
+                        "name": "file",
+                        "schema": {
+                            "$ref": "#/components/parameters/fileId"
+                        },
+                        "description": "词条所在文件ID"
+                    },
+                    {
+                        "in": "query",
+                        "name": "stage",
+                        "schema": {
+                            "$ref": "#/components/schemas/Stage"
+                        },
+                        "description": "筛选词条状态"
+                    },
+                    {
+                        "in": "query",
+                        "name": "detailed",
+                        "schema": {
+                            "type": "boolean",
+                            "enum": [
+                                1,
+                                ""
+                            ]
+                        },
+                        "description": "是否返回词条相关的内容（历史记录、注释等），默认不返回"
+                    }
+                ],
+                "description": "获取项目词条",
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/StringList"
+                    }
+                }
+            },
+            "post": {
+                "operationId": "createString",
+                "tags": [
+                    "Strings"
+                ],
+                "summary": "创建词条",
+                "description": "创建词条",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "allOf": [
+                                    {
+                                        "$ref": "#/components/schemas/StringItem"
+                                    }
+                                ],
+                                "properties": {
+                                    "file": {
+                                        "allOf": [
+                                            {
+                                                "$ref": "#/components/parameters/fileId"
+                                            }
+                                        ],
+                                        "example": 200
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/StringItem"
+                    }
+                }
+            },
+            "put": {
+                "operationId": "batchOperateStrings",
+                "tags": [
+                    "Strings"
+                ],
+                "summary": "批量修改/删除词条",
+                "description": "批量修改或删除词条",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "properties": {
+                                    "op": {
+                                        "enum": [
+                                            "update",
+                                            "delete"
+                                        ],
+                                        "type": "string",
+                                        "description": "操作类型，update - 更新，delete - 删除"
+                                    },
+                                    "id": {
+                                        "type": "array",
+                                        "description": "需要操作的词条的id",
+                                        "example": [
+                                            1,
+                                            2,
+                                            3,
+                                            4
+                                        ]
+                                    },
+                                    "stage": {
+                                        "$ref": "#/components/schemas/Stage"
+                                    },
+                                    "translation": {
+                                        "type": "string",
+                                        "description": "词条翻译",
+                                        "example": "这是一条翻译"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/StringItem"
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}/strings/{stringId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                },
+                {
+                    "$ref": "#/components/parameters/stringId"
+                }
+            ],
+            "get": {
+                "operationId": "getString",
+                "tags": [
+                    "Strings"
+                ],
+                "summary": "获取词条",
+                "description": "通过ID获取词条信息",
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/StringItem"
+                    }
+                }
+            },
+            "put": {
+                "operationId": "saveString",
+                "tags": [
+                    "Strings"
+                ],
+                "summary": "更新词条",
+                "description": "通过ID更新词条信息",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/StringItem"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/StringItem"
+                    }
+                }
+            },
+            "delete": {
+                "operationId": "deleteString",
+                "tags": [
+                    "Strings"
+                ],
+                "summary": "删除词条",
+                "description": "通过ID删除词条，仅管理员可用",
+                "responses": {
+                    "200": {
+                        "description": "删除成功"
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}/members": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                }
+            ],
+            "get": {
+                "operationId": "getMembers",
+                "summary": "成员列表",
+                "description": "获取项目成员列表",
+                "tags": [
+                    "Members"
+                ],
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/MemberList"
+                    }
+                }
+            },
+            "post": {
+                "operationId": "createMember",
+                "summary": "创建成员",
+                "description": "加入新成员。需管理员以上权限",
+                "tags": [
+                    "Members"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Member"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/MemberItem"
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}/members/{memberId}": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                }
+            ],
+            "put": {
+                "operationId": "editMember",
+                "summary": "修改成员",
+                "description": "修改成员信息。需管理员以上权限",
+                "tags": [
+                    "Members"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "properties": {
+                                    "permission": {
+                                        "description": "仅管理员及所有者可用，仅所有者可设置管理员",
+                                        "allOf": [
+                                            {
+                                                "$ref": "#/components/schemas/Permission"
+                                            }
+                                        ]
+                                    },
+                                    "note": {
+                                        "description": "成员备注",
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "$ref": "#/components/responses/MemberItem"
+                    }
+                }
+            },
+            "delete": {
+                "operationId": "deleteMember",
+                "summary": "删除成员",
+                "description": "将成员移除出项目",
+                "tags": [
+                    "Members"
+                ],
+                "responses": {
+                    "200": {
+                        "description": "成员删除成功"
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}/artifacts": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                }
+            ],
+            "get": {
+                "operationId": "getArtifact",
+                "tags": [
+                    "Artifacts"
+                ],
+                "summary": "导出结果",
+                "description": "获取最近一次导出的结果",
+                "responses": {
+                    "200": {
+                        "description": "返回结果",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Artifact"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "operationId": "generateArtifact",
+                "tags": [
+                    "Artifacts"
+                ],
+                "summary": "触发导出",
+                "description": "手动触发导出操作，仅管理员可使用",
+                "responses": {
+                    "200": {
+                        "description": "返回结果",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Job"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "没有权限"
+                    }
+                }
+            }
+        },
+        "/projects/{projectId}/artifacts/download": {
+            "parameters": [
+                {
+                    "$ref": "#/components/parameters/projectId"
+                }
+            ],
+            "get": {
+                "operationId": "downloadArtifact",
+                "tags": [
+                    "Artifacts"
+                ],
+                "summary": "下载",
+                "description": "下载导出的压缩包",
+                "responses": {
+                    "302": {
+                        "description": "重定向至压缩包链接"
+                    }
+                }
+            }
+        }
+    }
+}

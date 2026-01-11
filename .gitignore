@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# Build
+build/
+dist/
+*.spec
+*.exe
+
+# Configuration with secrets (if any - though json usually safe, protecting just in case user put real token inside)
+# config.json # Uncomment if config.json contains secrets, but usually we want the template. 
+# For now, we will track config.json assuming it doesn't have secrets or user knows.
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
